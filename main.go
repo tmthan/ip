@@ -6,91 +6,60 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
+	"os"
 )
 
-func extractIPs(r *http.Request) []net.IP {
-	headers := []string{"X-Forwarded-For", "X-Real-IP"}
-	var result []net.IP
+// IPAddresses holds the IPv4 and IPv6 addresses
+type IPAddresses struct {
+	V4 string `json:"v4"`
+	V6 string `json:"v6"`
+}
 
-	for _, header := range headers {
-		ips := r.Header.Get(header)
-		if ips != "" {
-			for _, ip := range strings.Split(ips, ",") {
-				parsed := net.ParseIP(strings.TrimSpace(ip))
-				if parsed != nil {
-					result = append(result, parsed)
-				}
+func getLocalIPs() (string, string) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Printf("Error getting network interfaces: %v", err)
+		return "", ""
+	}
+
+	var ipv4, ipv6 string
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				ipv4 = ipnet.IP.String()
+			} else if ipnet.IP.To16() != nil {
+				ipv6 = ipnet.IP.String()
 			}
 		}
 	}
-
-	ipStr, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		if ip := net.ParseIP(ipStr); ip != nil {
-			result = append(result, ip)
-		}
-	}
-
-	return result
-}
-
-func getIPv4(ips []net.IP) string {
-	for _, ip := range ips {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			return ipv4.String()
-		}
-	}
-	return ""
-}
-
-func getIPv6(ips []net.IP) string {
-	for _, ip := range ips {
-		// IP không phải IPv4, nhưng là hợp lệ thì là IPv6
-		if ip.To4() == nil && ip.To16() != nil {
-			return ip.String()
-		}
-	}
-	return ""
-}
-
-func ipv4Handler(w http.ResponseWriter, r *http.Request) {
-	ip := getIPv4(extractIPs(r))
-	if ip == "" {
-		http.Error(w, "IPv4 not found", http.StatusInternalServerError)
-		return
-	}
-	fmt.Fprint(w, ip)
-}
-
-func ipv6Handler(w http.ResponseWriter, r *http.Request) {
-	ips := extractIPs(r)
-	ipv6 := getIPv6(ips)
-	if ipv6 == "" {
-		ipv6 = getIPv4(ips)
-	}
-	if ipv6 == "" {
-		http.Error(w, "No IP found", http.StatusInternalServerError)
-		return
-	}
-	fmt.Fprint(w, ipv6)
-}
-
-func jsonHandler(w http.ResponseWriter, r *http.Request) {
-	ips := extractIPs(r)
-	res := map[string]string{
-		"v4": getIPv4(ips),
-		"v6": getIPv6(ips),
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(res)
+	return ipv4, ipv6
 }
 
 func main() {
-	http.HandleFunc("/", ipv4Handler)
-	http.HandleFunc("/v6", ipv6Handler)
-	http.HandleFunc("/json", jsonHandler)
+	ipv4, ipv6 := getLocalIPs()
 
-	log.Println("Listening on port 8081")
-	log.Fatal(http.ListenAndServe(":8081", nil))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s", ipv4)
+	})
+
+	http.HandleFunc("/v6", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s", ipv6)
+	})
+
+	http.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		ipAddrs := IPAddresses{
+			V4: ipv4,
+			V6: ipv6,
+		}
+		json.NewEncoder(w).Encode(ipAddrs)
+	})
+
+	port := "8081"
+	fmt.Printf("Server starting on port %s...\n", port)
+	err := http.ListenAndServe(":"+port, nil)
+	if err != nil {
+		log.Fatalf("Server failed to start: %v", err)
+		os.Exit(1)
+	}
 }
