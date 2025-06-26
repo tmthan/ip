@@ -9,88 +9,74 @@ import (
 	"strings"
 )
 
-// Lấy danh sách IP (net.IP) từ các header phổ biến và RemoteAddr
-func extractIPs(r *http.Request) []net.IP {
+// Hàm gốc của bạn để lấy IP từ header hoặc RemoteAddr
+func getRawClientIP(r *http.Request) string {
 	headers := []string{"X-Forwarded-For", "X-Real-IP"}
-	var ips []net.IP
 
 	for _, header := range headers {
-		raw := r.Header.Get(header)
-		if raw != "" {
-			for _, ipStr := range strings.Split(raw, ",") {
-				ipStr = strings.TrimSpace(ipStr)
-				if ip := net.ParseIP(ipStr); ip != nil {
-					ips = append(ips, ip)
-				}
-			}
+		ips := r.Header.Get(header)
+		if ips != "" {
+			return strings.TrimSpace(strings.Split(ips, ",")[0])
 		}
 	}
 
-	// Thêm RemoteAddr
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		if ip := net.ParseIP(host); ip != nil {
-			ips = append(ips, ip)
-		}
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
 	}
-
-	return ips
+	return ip
 }
 
-// Tìm IPv4 đầu tiên trong danh sách
-func getIPv4(ips []net.IP) string {
-	for _, ip := range ips {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			return ipv4.String()
-		}
+// Phân loại IP v4 / v6
+func classifyIP(rawIP string) (v4 string, v6 string) {
+	parsedIP := net.ParseIP(rawIP)
+	if parsedIP == nil {
+		return "", ""
 	}
-	return ""
+
+	if parsedIP.To4() != nil {
+		return parsedIP.String(), ""
+	}
+	return "", parsedIP.String()
 }
 
-// Tìm IPv6 đầu tiên trong danh sách
-func getIPv6(ips []net.IP) string {
-	for _, ip := range ips {
-		if ip.To4() == nil && ip.To16() != nil {
-			return ip.String()
-		}
-	}
-	return ""
-}
-
-// Handler trả IPv4 hoặc lỗi nếu không có
 func ipv4Handler(w http.ResponseWriter, r *http.Request) {
-	ips := extractIPs(r)
-	ipv4 := getIPv4(ips)
-	if ipv4 == "" {
-		http.Error(w, "IPv4 address not found", http.StatusInternalServerError)
+	rawIP := getRawClientIP(r)
+	v4, _ := classifyIP(rawIP)
+	if v4 == "" {
+		http.Error(w, "IPv4 not found", http.StatusInternalServerError)
 		return
 	}
-	fmt.Fprint(w, ipv4)
+	fmt.Fprint(w, v4)
 }
 
-// Handler trả IPv6 hoặc fallback IPv4, lỗi nếu không có
 func ipv6Handler(w http.ResponseWriter, r *http.Request) {
-	ips := extractIPs(r)
-	ipv6 := getIPv6(ips)
-	if ipv6 == "" {
-		ipv6 = getIPv4(ips)
-	}
-	if ipv6 == "" {
-		http.Error(w, "No IPv6 or IPv4 address found", http.StatusInternalServerError)
+	rawIP := getRawClientIP(r)
+	_, v6 := classifyIP(rawIP)
+	if v6 == "" {
+		// fallback: trả v4 nếu không có v6
+		v4, _ := classifyIP(rawIP)
+		if v4 == "" {
+			http.Error(w, "No valid IP found", http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, v4)
 		return
 	}
-	fmt.Fprint(w, ipv6)
+	fmt.Fprint(w, v6)
 }
 
-// Handler trả JSON {v4: "...", v6: "..."}
 func jsonHandler(w http.ResponseWriter, r *http.Request) {
-	ips := extractIPs(r)
-	resp := map[string]string{
-		"v4": getIPv4(ips),
-		"v6": getIPv6(ips),
+	rawIP := getRawClientIP(r)
+	v4, v6 := classifyIP(rawIP)
+
+	response := map[string]string{
+		"v4": v4,
+		"v6": v6,
 	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(response)
 }
 
 func main() {
@@ -98,6 +84,6 @@ func main() {
 	http.HandleFunc("/v6", ipv6Handler)
 	http.HandleFunc("/json", jsonHandler)
 
-	log.Println("Server listening on port 8081")
+	log.Println("Listening on port 8081")
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }
