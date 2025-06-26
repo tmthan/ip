@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -9,7 +10,6 @@ import (
 )
 
 func extractIPs(r *http.Request) []net.IP {
-	// Ưu tiên các header từ proxy/nginx
 	headers := []string{"X-Forwarded-For", "X-Real-IP"}
 	var result []net.IP
 
@@ -25,7 +25,6 @@ func extractIPs(r *http.Request) []net.IP {
 		}
 	}
 
-	// Nếu không có, dùng RemoteAddr
 	ipStr, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		if ip := net.ParseIP(ipStr); ip != nil {
@@ -36,39 +35,38 @@ func extractIPs(r *http.Request) []net.IP {
 	return result
 }
 
-func getPreferredIP(r *http.Request, preferV6 bool) string {
-	ips := extractIPs(r)
-	var fallback string
-
+func getIPv4(ips []net.IP) string {
 	for _, ip := range ips {
 		if ip.To4() != nil {
-			if !preferV6 {
-				return ip.String() // Trả v4 nếu không ưu tiên v6
-			}
-			if fallback == "" {
-				fallback = ip.String() // lưu v4 làm fallback
-			}
-		} else {
-			if preferV6 {
-				return ip.String() // Trả v6 nếu được
-			}
+			return ip.String()
 		}
 	}
+	return ""
+}
 
-	return fallback
+func getIPv6(ips []net.IP) string {
+	for _, ip := range ips {
+		if ip.To4() == nil {
+			return ip.String()
+		}
+	}
+	return ""
 }
 
 func ipv4Handler(w http.ResponseWriter, r *http.Request) {
-	ip := getPreferredIP(r, false)
+	ip := getIPv4(extractIPs(r))
 	if ip == "" {
-		http.Error(w, "No IP found", http.StatusInternalServerError)
+		http.Error(w, "IPv4 not found", http.StatusInternalServerError)
 		return
 	}
 	fmt.Fprint(w, ip)
 }
 
 func ipv6Handler(w http.ResponseWriter, r *http.Request) {
-	ip := getPreferredIP(r, true)
+	ip := getIPv6(extractIPs(r))
+	if ip == "" {
+		ip = getIPv4(extractIPs(r)) // fallback
+	}
 	if ip == "" {
 		http.Error(w, "No IP found", http.StatusInternalServerError)
 		return
@@ -76,9 +74,20 @@ func ipv6Handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, ip)
 }
 
+func jsonHandler(w http.ResponseWriter, r *http.Request) {
+	ips := extractIPs(r)
+	res := map[string]string{
+		"v4": getIPv4(ips),
+		"v6": getIPv6(ips),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
 func main() {
 	http.HandleFunc("/", ipv4Handler)
 	http.HandleFunc("/v6", ipv6Handler)
+	http.HandleFunc("/json", jsonHandler)
 
 	log.Println("Listening on port 8081")
 	log.Fatal(http.ListenAndServe(":8081", nil))
