@@ -6,6 +6,6 @@ COPY . .
 
 RUN go build -o ip-server main.go
 
-EXPOSE 8080
+EXPOSE 8081
 
 CMD ["./ip-server"]
