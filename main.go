@@ -8,47 +8,78 @@ import (
 	"strings"
 )
 
-func getClientIPv4(r *http.Request) string {
-	// Ưu tiên lấy từ các header thường dùng khi có proxy
+func extractIPs(r *http.Request) []net.IP {
+	// Ưu tiên các header từ proxy/nginx
 	headers := []string{"X-Forwarded-For", "X-Real-IP"}
+	var result []net.IP
 
 	for _, header := range headers {
 		ips := r.Header.Get(header)
 		if ips != "" {
 			for _, ip := range strings.Split(ips, ",") {
-				ip = strings.TrimSpace(ip)
-				parsed := net.ParseIP(ip)
-				if parsed != nil && parsed.To4() != nil {
-					return ip // Trả IP v4 đầu tiên hợp lệ
+				parsed := net.ParseIP(strings.TrimSpace(ip))
+				if parsed != nil {
+					result = append(result, parsed)
 				}
 			}
 		}
 	}
 
-	// Fallback: lấy từ RemoteAddr
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return ""
-	}
-	parsed := net.ParseIP(ip)
-	if parsed != nil && parsed.To4() != nil {
-		return ip
+	// Nếu không có, dùng RemoteAddr
+	ipStr, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		if ip := net.ParseIP(ipStr); ip != nil {
+			result = append(result, ip)
+		}
 	}
 
-	return ""
+	return result
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	ip := getClientIPv4(r)
+func getPreferredIP(r *http.Request, preferV6 bool) string {
+	ips := extractIPs(r)
+	var fallback string
+
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			if !preferV6 {
+				return ip.String() // Trả v4 nếu không ưu tiên v6
+			}
+			if fallback == "" {
+				fallback = ip.String() // lưu v4 làm fallback
+			}
+		} else {
+			if preferV6 {
+				return ip.String() // Trả v6 nếu được
+			}
+		}
+	}
+
+	return fallback
+}
+
+func ipv4Handler(w http.ResponseWriter, r *http.Request) {
+	ip := getPreferredIP(r, false)
 	if ip == "" {
-		http.Error(w, "IPv4 address not found", http.StatusInternalServerError)
+		http.Error(w, "No IP found", http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprint(w, ip)
+}
+
+func ipv6Handler(w http.ResponseWriter, r *http.Request) {
+	ip := getPreferredIP(r, true)
+	if ip == "" {
+		http.Error(w, "No IP found", http.StatusInternalServerError)
 		return
 	}
 	fmt.Fprint(w, ip)
 }
 
 func main() {
-	http.HandleFunc("/", handler)
+	http.HandleFunc("/", ipv4Handler)
+	http.HandleFunc("/v6", ipv6Handler)
+
 	log.Println("Listening on port 8081")
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }
