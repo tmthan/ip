@@ -37,8 +37,8 @@ func extractIPs(r *http.Request) []net.IP {
 
 func getIPv4(ips []net.IP) string {
 	for _, ip := range ips {
-		if ip.To4() != nil {
-			return ip.String()
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4.String()
 		}
 	}
 	return ""
@@ -46,7 +46,8 @@ func getIPv4(ips []net.IP) string {
 
 func getIPv6(ips []net.IP) string {
 	for _, ip := range ips {
-		if ip.To4() == nil {
+		// IP không phải IPv4, nhưng là hợp lệ thì là IPv6
+		if ip.To4() == nil && ip.To16() != nil {
 			return ip.String()
 		}
 	}
@@ -63,15 +64,16 @@ func ipv4Handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func ipv6Handler(w http.ResponseWriter, r *http.Request) {
-	ip := getIPv6(extractIPs(r))
-	if ip == "" {
-		ip = getIPv4(extractIPs(r)) // fallback
+	ips := extractIPs(r)
+	ipv6 := getIPv6(ips)
+	if ipv6 == "" {
+		ipv6 = getIPv4(ips)
 	}
-	if ip == "" {
+	if ipv6 == "" {
 		http.Error(w, "No IP found", http.StatusInternalServerError)
 		return
 	}
-	fmt.Fprint(w, ip)
+	fmt.Fprint(w, ipv6)
 }
 
 func jsonHandler(w http.ResponseWriter, r *http.Request) {
